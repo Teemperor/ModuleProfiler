@@ -116,13 +116,83 @@ def main():
     
     module_reports = get_reports(module_reports_dir, True)
     nonmodule_reports = get_reports(nonmodule_reports_dir, False)
-    create_graphics(module_reports, nonmod_reports)
+    create_graphics(module_reports, nonmodule_reports)
 
-def create_graphics(module_reports, nonmod_reports):
+def create_html(path, title, data):
+    html_output = open(path)
+    html_output.write("""<!DOCTYPE HTML>
+<html><head>  <script type="text/javascript">
+	window.onload = function () {
+		var chart = new CanvasJS.Chart("chartContainer",
+		{
+			theme: "theme1",
+                        animationEnabled: false,
+			title:{
+				text: "Memory usage root",
+				fontSize: 10
+			},
+			toolTip: {
+				shared: true
+			},			
+			axisY: {
+				title: " """ + title + """"
+			},			
+			data: [ 
+			{
+				type: "column",	
+				name: "RSS without modules (kB)",
+				legendText: "Memory without Modules",
+				showInLegend: true, 
+				dataPoints: [""")
+
+    for entry in data:
+        html_output.write('{label: "' + entry[0] + '", y: ' + str(entry[1]) + '},')
+
+    html_output.write("""				]
+			},
+			{
+				type: "column",	
+				name: "RSS with modules (kB)",
+				legendText: "Memory with Modules",
+				showInLegend: true,
+				dataPoints:[""")
+				
+    for entry in data:
+        html_output.write('{label: "' + entry[0] + '", y: ' + str(entry[2]) + '},')
+
+    html_output.write("""]
+			}
+			
+			],
+          legend:{
+            cursor:"pointer",
+            itemclick: function(e){
+              if (typeof(e.dataSeries.visible) === "undefined" || e.dataSeries.visible) {
+              	e.dataSeries.visible = false;
+              }
+              else {
+                e.dataSeries.visible = true;
+              }
+            	chart.render();
+            }
+          },
+        });
+
+chart.render();
+}
+</script>
+  <script type="text/javascript" src="http://canvasjs.com/assets/script/canvasjs.min.js"></script>
+</head>
+<body><div id="chartContainer" style="height: 300px; width: 100%;"></div></body></html>""")
+    html_output.close()
+
+def create_graphics(module_reports, nonmodule_reports):
     
     print("MEMORY")
 
     nonmodule_reports.sort(key=lambda x: x.memory, reverse=True)
+
+    memory_data = []
 
     with open("memorystats", "w") as memorystats:
         for nonmod_report in nonmodule_reports:
@@ -130,6 +200,7 @@ def create_graphics(module_reports, nonmod_reports):
                 if with_fmodules(mod_report.lines):
                     if mod_report.sourcefile == nonmod_report.sourcefile:
                         memorystats.write(mod_report.short_file + " " + str(mod_report.memory) + " " + str(nonmod_report.memory) + "\n")
+                        memory_data.append([mod_report.sourcefile, mod_report.memory, nonmod_report.memory])
                         
     os.system("gnuplot  --persist memory.gp")
 
@@ -340,7 +411,7 @@ class Report:
 
 def get_reports(directory, with_modules):
     if with_modules:
-        cache = shelve.open(module_report_cache)
+        cache = shelve.open(module_cache_file)
     else:
         cache = shelve.open(nonmodule_cache_file)
     result = []
