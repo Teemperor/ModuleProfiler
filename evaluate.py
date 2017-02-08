@@ -1,16 +1,20 @@
 #!/usr/bin/env python
 
-import os, subprocess, shelve, logging, sys, getopt, tempfile, glob, json, hashlib, errno, signal, queue, multiprocessing, threading
+import os, subprocess, shelve, logging, sys, getopt, tempfile, glob, json, hashlib, errno, signal, queue, multiprocessing, threading, re, shutil
 
 module_build_dir = ""
 nonmodule_build_dir = ""
-needs_profiling = False
+module_needs_profiling = False
+nonmodule_needs_profiling = False
 jobs = 1
 
-cache_file = "report_cache"
+module_cache_file = "module_report_cache"
+nonmodule_cache_file = "nonmodule_report_cache"
 report_nameprefix = "report_"
 module_reports_dir = os.getcwd() + "/module_reports/"
 nonmodule_reports_dir = os.getcwd() + "/nonmodule_reports/"
+
+file_regex = re.compile("[\s\S]*")
 
 def signal_handler(signal, frame):
         print('Aborted...!')
@@ -20,43 +24,57 @@ signal.signal(signal.SIGINT, signal_handler)
 def usage():
     print(
         """\
-        USAGE: evaluate.py --module_build PATH --nonmodule_build PATH
+        USAGE: evaluate.py --module-build PATH --nonmodule-build PATH
         
         ARGS:
-        -h, --help                     Show this help
-        -j, --jobs                     Number of jobs to use while profiling
-        -m, --module_build PATH        Path to the module build folder
-        -n, --nonmodule_build PATH     Path to the non-module build folder
-        -r, --reprofile                Reprofiles all compiler commands
+        -h,  --help                     Show this help
+        -j,  --jobs                     Number of jobs to use while profiling
+        -m,  --module-build  PATH       Path to the module build folder
+        -n,  --nonmodule-build PATH     Path to the non-module build folder
+        --reprofile-module              Reprofiles all the module build
+        --reprofile-nonmodule           Reprofiles all the non-module build
+        -r,  --reprofile                Reprofiles all compiler commands
+        -f,  --filter REGEX             Only profile files that match the given filter
         """)
 
 def main():
     global module_build_dir
     global nonmodule_build_dir
-    global needs_profiling
+    global module_needs_profiling
+    global nonmodule_needs_profiling
+    global file_regex
     global jobs
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "hrm:n:j:", ["help", "reprofile", "module_build=", "nonmodule_build=", "jobs="])
+        opts, args = getopt.getopt(sys.argv[1:], "hrm:n:j:f:", ["help", "reprofile",  "reprofile-nonmodule", "reprofile-module", "filter=", "module-build=", "nonmodule-build=", "jobs="])
     except getopt.GetoptError as err:
         print(str(err))  # will print something like "option -a not recognized"
         sys.exit(2)
         usage()
     for o, a in opts:
         if o in ("-h", "--help"):
+            print("foo")
             usage()
             sys.exit()
         elif o in ("-r", "--reprofile"):
-            try:
-                os.remove(cache_file)
-            except:
-                pass
-            needs_profiling = True
-        elif o in ("-m", "--module_build"):
+            module_needs_profiling = True
+            nonmodule_needs_profiling = True
+            shutil.rmtree(nonmodule_reports_dir)
+            shutil.rmtree(module_reports_dir)
+        elif o == "--reprofile-module":
+            nonmodule_needs_profiling = True
+            shutil.rmtree(module_reports_dir)
+        elif o == "--reprofile-nonmodule":
+            module_needs_profiling = True
+            shutil.rmtree(nonmodule_reports_dir)
+        elif o in ("-m", "--module-build"):
             module_build_dir = a
+        elif o in ("-n", "--nonmodule-build"):
+            nonmodule_build_dir = a
         elif o in ("-j", "--jobs"):
             jobs = int(a)
-        elif o in ("-n", "--nonmodule_build"):
-            nonmodule_build_dir = a
+        elif o in ("-f", "--filter"):
+            file_regex = re.compile(a)
+            print("Using filter: " + a)
         else:
             assert False, "unhandled option"
 
@@ -66,7 +84,6 @@ def main():
     if nonmodule_build_dir == "":
         print("Missing --nonmodule_build flag! See --help")
 
-
     mkdir_p(module_reports_dir)
     mkdir_p(nonmodule_reports_dir)
 
@@ -75,10 +92,25 @@ def main():
     if len(glob.glob(nonmodule_reports_dir + "/" + report_nameprefix + "*")) == 0:
         needs_profiling = True
         
+    if module_needs_profiling:
+        try:
+            os.remove(module_cache_file)
+        except:
+            pass
+        
+    if nonmodule_needs_profiling:
+        try:
+            os.remove(nonmodule_cache_file)
+        except:
+            pass
+        
     print("[STATUS] Reprofiling builds")
-    if needs_profiling:
+    
+    print(module_build_dir)
+    if module_needs_profiling:
         print("[STATUS] Profiling module build")
         profile_db(module_reports_dir, module_build_dir + "/compile_commands.json")
+    if nonmodule_needs_profiling:
         print("[STATUS] Profiling non-module build")
         profile_db(nonmodule_reports_dir, nonmodule_build_dir + "/compile_commands.json")
     
@@ -87,7 +119,6 @@ def main():
     create_graphics(module_reports, nonmod_reports)
 
 def create_graphics(module_reports, nonmod_reports):
-    
     
     print("MEMORY")
 
@@ -196,6 +227,8 @@ def run_profile_command(job_queue, output_dir):
         job_queue.task_done()
 
 def profile_db(output_dir, db_path):
+    global file_regex
+    
     job_queue = queue.Queue(jobs)
 
     for _ in range(jobs):
@@ -205,11 +238,18 @@ def profile_db(output_dir, db_path):
         t.start()
 
     database = json.load(open(db_path))
-    total_entries = len(database)
+    total_entries = 0
     index = 0
+    to_compile = []
+    
+    
     for compile_entry in database:
+        if re.match(file_regex, compile_entry['file']):
+            total_entries += 1
+            to_compile.append(compile_entry)
+    
+    for compile_entry in to_compile:
         index += 1
-
         #profile_command(output_dir, compile_entry)
         job_queue.put([index, total_entries, compile_entry]);
         
@@ -226,7 +266,7 @@ def getlines(fname):
     # you may also want to remove whitespace characters like `\n` at the end of each line
     content = [x.strip() for x in content]
     #Remove garbage from the first time output line (that contains the command)
-    content[0] = content[0][len("        Command being timed: \"":-1]
+    content[0] = content[0][len("        Command being timed: \""):-1]
     return content
     
 def get_memory(lines):
@@ -299,7 +339,10 @@ class Report:
     lines = []
 
 def get_reports(directory, with_modules):
-    cache = shelve.open(report_cache)
+    if with_modules:
+        cache = shelve.open(module_report_cache)
+    else:
+        cache = shelve.open(nonmodule_cache_file)
     result = []
     dir_list = os.listdir(directory)
     index = 0
